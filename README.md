@@ -3,7 +3,7 @@
 Um chat P2P com múltiplos usuários, sem servidor central, usando sockets TCP e descoberta de peers via multicast (LAN). Inclui interface gráfica (Swing), broadcast com deduplicação, identificação de usuários, histórico de mensagens e encerramento seguro.
 
 ## Requisitos
-- Java 11+ (testado com Java 17)
+- Java 11+ (testado com Java 24)
 - Maven 3.6+
 
 ## Build
