@@ -115,6 +115,16 @@ public class PeerNode {
 
     public void connectAsync(String host, int port) {
         ioPool.submit(() -> {
+            if (!running.get()) return;
+            if (isSelf(host, port)) {
+                if (ui != null) ui.onStatus("Não foi possível se conectar: destino é este próprio nó.");
+                return;
+            }
+            if (isAlreadyConnected(host, port)) {
+                if (ui != null) ui.onStatus("Não foi possível se conectar: já existe conexão com " + host + ":" + port);
+                return;
+            }
+
             try {
                 Socket socket = new Socket();
                 socket.connect(new InetSocketAddress(host, port), 4000);
@@ -123,13 +133,44 @@ public class PeerNode {
                 pendingByRemote.put(remoteKey(socket), handler);
                 handler.start();
 
-                // Envia HELLO
-                sendHello(handler);
                 if (ui != null) ui.onStatus("Conectado a " + host + ":" + port);
             } catch (IOException e) {
                 if (ui != null) ui.onStatus("Falha ao conectar: " + e.getMessage());
             }
         });
+    }
+
+    private boolean isSelf(String host, int port) {
+        if (port != listenPort) return false;
+        String h = host.toLowerCase(Locale.ROOT);
+        return h.equals("127.0.0.1") || h.equals("localhost");
+    }
+
+    private boolean isAlreadyConnected(String host, int port) {
+        String key = remoteKey(host, port);
+        if (pendingByRemote.containsKey(key)) return true;
+
+        for (ConnectionHandler ch : connectionsByPeerId.values()) {
+            String rh = ch.getRemoteHost();
+            int rp = ch.getRemotePort();
+            if (hostEquals(rh, host) && rp == port) return true;
+        }
+
+        for (Map.Entry<String, ConnectionHandler> e : pendingByRemote.entrySet()) {
+            ConnectionHandler ch = e.getValue();
+            if (hostEquals(ch.getRemoteHost(), host) && ch.getRemotePort() == port) return true;
+        }
+        return false;
+    }
+
+    private boolean hostEquals(String a, String b) {
+        if (a == null || b == null) return false;
+        if (a.equalsIgnoreCase(b)) return true;
+        try {
+            return InetAddress.getByName(a).equals(InetAddress.getByName(b));
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void sendHello(ConnectionHandler handler) {
@@ -138,7 +179,6 @@ public class PeerNode {
     }
 
     void onHandlerStarted(ConnectionHandler handler) {
-        // Quando handler inicia, enviamos HELLO também (caso seja inbound)
         sendHello(handler);
     }
 
@@ -177,7 +217,16 @@ public class PeerNode {
     private void handleHello(ConnectionHandler handler, Message m) {
         if (m.getFromId() == null) return;
 
-        // Atualiza info do peer no handler e mapas
+        if (m.getFromId().equals(myId)) {
+            handler.stop();
+            return;
+        }
+
+        if (connectionsByPeerId.containsKey(m.getFromId())) {
+            handler.stop();
+            return;
+        }
+
         PeerInfo info = new PeerInfo();
         info.setId(m.getFromId());
         info.setName(m.getFromName() != null ? m.getFromName() : "peer");
@@ -198,7 +247,6 @@ public class PeerNode {
                 if (pi.getId().equals(myId)) continue;
                 peersById.put(pi.getId(), pi);
             }
-            // Compartilha minha visão também
             sharePeers(handler);
         }
     }
@@ -216,22 +264,18 @@ public class PeerNode {
         String id = m.getId();
         if (id == null) return;
 
-        // Deduplica
         if (!seenMessageIds.add(id)) {
-            return; // já recebida
+            return;
         }
 
-        // Atualiza lastSeen do remetente
         PeerInfo sender = connectionsByPeerId.getOrDefault(m.getFromId(), handler).getPeerInfo();
         if (sender != null) {
             sender.setLastSeen(System.currentTimeMillis());
             peersById.put(sender.getId(), sender);
         }
 
-        // Entrega à UI
         if (ui != null) ui.onMessageReceived(m);
 
-        // Rebroadcast para todos, exceto por onde chegou
         broadcast(m, handler);
     }
 
@@ -253,10 +297,8 @@ public class PeerNode {
 
     public void broadcastChat(String text) {
         Message m = Message.chat(myId, myName, text);
-        // Marca como visto localmente e entrega na UI local
         seenMessageIds.add(m.getId());
         if (ui != null) ui.onMessageReceived(m);
-        // Envia para todos
         broadcast(m, null);
     }
 
